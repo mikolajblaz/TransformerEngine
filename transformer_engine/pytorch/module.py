@@ -953,6 +953,7 @@ class LayerNormLinear(TransformerEngineBaseModule):
         parallel_mode: Optional[str] = None,
         return_layernorm_output: bool = False,
         skip_weight_param_allocation: bool = False,
+        layer_norm_shift: int = 0,
     ) -> None:
         super().__init__()
         self.in_features = in_features
@@ -962,6 +963,7 @@ class LayerNormLinear(TransformerEngineBaseModule):
         self.return_bias = return_bias
         self.return_layernorm_output = return_layernorm_output
         self.skip_weight_param_allocation = skip_weight_param_allocation
+        self.layer_norm_shift = layer_norm_shift
 
         if tp_group is None:
             self.tp_size = tp_size
@@ -1052,7 +1054,10 @@ class LayerNormLinear(TransformerEngineBaseModule):
 
     def reset_layer_norm_parameters(self) -> None:
         """Init LN params"""
-        init.ones_(self.layer_norm_weight)
+        if self.layer_norm_shift == 0:
+            init.ones_(self.layer_norm_weight)
+        else:
+            init.constant_(self.layer_norm_weight, 1 - self.layer_norm_shift)
         init.zeros_(self.layer_norm_bias)
 
     def forward(
@@ -1097,7 +1102,7 @@ class LayerNormLinear(TransformerEngineBaseModule):
 
         out = _LayerNormLinear.apply(
             inp,
-            self.layer_norm_weight,
+            self.layer_norm_weight if self.layer_norm_shift == 0 else self.layer_norm_weight + self.layer_norm_shift,
             self.layer_norm_bias,
             weight if weight is not None else self.weight,
             self.weight1_fp8 if self.fp8 else None,
@@ -2266,6 +2271,7 @@ class LayerNormMLP(TransformerEngineBaseModule):
         seq_length: Optional[int] = None,
         micro_batch_size: Optional[int] = None,
         set_parallel_mode: bool = False,
+        layer_norm_shift: int = 0,
     ) -> None:
         super().__init__()
 
@@ -2275,6 +2281,7 @@ class LayerNormMLP(TransformerEngineBaseModule):
         self.return_layernorm_output = return_layernorm_output
         self.bias_gelu_nvfusion = bool(int(os.getenv("NVTE_BIAS_GELU_NVFUSION", "1")))
         self.set_parallel_mode = set_parallel_mode
+        self.layer_norm_shift = layer_norm_shift
 
         if tp_group is None:
             self.tp_size = tp_size
@@ -2392,7 +2399,10 @@ class LayerNormMLP(TransformerEngineBaseModule):
 
     def reset_layer_norm_parameters(self) -> None:
         """Init LN params"""
-        init.ones_(self.layer_norm_weight)
+        if self.layer_norm_shift == 0:
+            init.ones_(self.layer_norm_weight)
+        else:
+            init.constant_(self.layer_norm_weight, 1 - self.layer_norm_shift)
         init.zeros_(self.layer_norm_bias)
 
     def forward(
@@ -2424,7 +2434,7 @@ class LayerNormMLP(TransformerEngineBaseModule):
 
         out = _LayerNormMLP.apply(
             inp,
-            self.layer_norm_weight,
+            self.layer_norm_weight if self.layer_norm_shift == 0 else self.layer_norm_weight + self.layer_norm_shift,
             self.layer_norm_bias,
             self.fc1_weight,
             self.weight1_fp8 if self.fp8 else None,
@@ -2532,9 +2542,11 @@ class LayerNorm(torch.nn.Module):
         eps: float = 1e-5,
         sequence_parallel: bool = False,
         params_dtype: torch.dtype = torch.float32,
+        layer_norm_shift: int = 0,
     ) -> None:
         super().__init__()
         self.eps = eps
+        self.layer_norm_shift = layer_norm_shift
         self.weight = Parameter(
             torch.empty(
                 hidden_size,
@@ -2572,7 +2584,10 @@ class LayerNorm(torch.nn.Module):
 
     def reset_layer_norm_parameters(self) -> None:
         """Init LN params"""
-        init.ones_(self.weight)
+        if self.layer_norm_shift == 0:
+            init.ones_(self.layer_norm_weight)
+        else:
+            init.constant_(self.layer_norm_weight, 1 - self.layer_norm_shift)
         init.zeros_(self.bias)
 
     def forward(self, inp: torch.Tensor) -> torch.Tensor:
@@ -2582,5 +2597,5 @@ class LayerNorm(torch.nn.Module):
             setattr(self, "weight", self.layer_norm_weight)
         if hasattr(self, "layer_norm_bias"):
             setattr(self, "bias", self.layer_norm_bias)
-
-        return _LayerNorm.apply(inp, self.weight, self.bias, self.eps)
+        weight = self.weight if self.layer_norm_shift == 0 else self.weight + self.layer_norm_shift,
+        return _LayerNorm.apply(inp, weight, self.bias, self.eps)
