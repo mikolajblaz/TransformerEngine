@@ -251,6 +251,7 @@ class MultiHeadAttention(torch.nn.Module):
         attention_type: str = "self",
         set_parallel_mode: bool = False,
         fuse_qkv_params: bool = False,
+        normalization: str = 'layernorm',
     ) -> None:
         super().__init__()
         self.layer_number = (layer_number,)
@@ -304,6 +305,7 @@ class MultiHeadAttention(torch.nn.Module):
                     parallel_mode=qkv_parallel_mode,
                     return_layernorm_output=return_layernorm_output,
                     skip_weight_param_allocation=not fuse_qkv_params,
+                    layer_norm_shift=int(normalization == 'layernorm1p'),
                     **common_gemm_kwargs,
                 )
             else:
@@ -329,6 +331,7 @@ class MultiHeadAttention(torch.nn.Module):
                     parallel_mode=qkv_parallel_mode,
                     return_layernorm_output=return_layernorm_output,
                     skip_weight_param_allocation=not fuse_qkv_params,
+                    layer_norm_shift=int(normalization == 'layernorm1p'),
                     **common_gemm_kwargs,
                 )
             else:
@@ -828,8 +831,10 @@ class TransformerLayer(torch.nn.Module):
         drop_path_rate: float = 0.0,
         set_parallel_mode: bool = False,
         fuse_qkv_params: bool = False,
+            normalization: str = 'layernorm',
     ) -> None:
         super().__init__()
+        print(f'Running custom TE installation with normalization "{normalization}"')
 
         bias_dropout_fusion = bool(int(os.getenv("NVTE_BIAS_DROPOUT_FUSION", "1")))
         self.layer_number = layer_number
@@ -892,6 +897,7 @@ class TransformerLayer(torch.nn.Module):
             attn_mask_type=self_attn_mask_type,
             input_layernorm=not output_layernorm,
             attention_type="self",
+            normalization=normalization,
         )
 
         if layer_type == "decoder":
@@ -901,6 +907,7 @@ class TransformerLayer(torch.nn.Module):
                 attn_mask_type="padding",
                 input_layernorm=True,
                 attention_type="cross",
+                normalization=normalization,
             )
 
         # LayerNorm -> gelu(Linear + Bias) -> Linear
@@ -924,6 +931,7 @@ class TransformerLayer(torch.nn.Module):
             seq_length=seq_length,
             micro_batch_size=micro_batch_size,
             set_parallel_mode=set_parallel_mode,
+            layer_norm_shift=int(normalization == 'layernorm1p'),
         )
 
         self.hidden_dropout = hidden_dropout
@@ -953,6 +961,7 @@ class TransformerLayer(torch.nn.Module):
                 eps=layernorm_epsilon,
                 sequence_parallel=self.sequence_parallel,
                 params_dtype=params_dtype,
+                layer_norm_shift=int(normalization == 'layernorm1p'),
             )
 
     def set_tensor_parallel_group(self, tp_group: Union[dist_group_type, None]) -> None:
